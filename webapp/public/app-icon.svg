@@ -10,7 +10,10 @@
         that pairs with the blue updater icon without colliding with it).
       - Heart-pulse / EKG trace = diagnostic intent, the doctor's job.
       - Cross at the right = medical / triage symbol, balances the trace.
-      - Single-color foreground keeps the icon legible at favicon size.
+      - Fills the whole 128x128 viewBox edge-to-edge (no internal rx).
+        The SignalK admin UI scales the icon with background-size:cover
+        inside its own tile; any internal rounded-rect would leave
+        corner artifacts where the tile's bg shows through.
   -->
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
@@ -19,7 +22,7 @@
     </linearGradient>
   </defs>
 
-  <rect width="128" height="128" rx="24" fill="url(#bg)"/>
+  <rect width="128" height="128" fill="url(#bg)"/>
 
   <!-- EKG / heart-pulse trace running left -> right, with a heartbeat spike in the middle -->
   <path d="M 16 64
