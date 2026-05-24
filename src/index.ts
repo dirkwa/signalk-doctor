@@ -2,6 +2,7 @@ import type { Plugin, ServerAPI } from '@signalk/server-api';
 import type { IRouter, Request, Response } from 'express';
 import type { ContainerManagerApi } from './types.js';
 import { ConfigSchema, SCHEMA_DEFAULTS, type Config } from './config/schema.js';
+import { resolveImageTag } from './config/image-tag.js';
 
 const PLUGIN_ID = 'signalk-doctor';
 const CONTAINER_NAME = 'signalk-doctor-server';
@@ -121,7 +122,7 @@ export default function pluginFactory(app: ServerAPI): Plugin {
           pluginId: PLUGIN_ID,
           containerName: CONTAINER_NAME,
           image: IMAGE,
-          currentTag: () => state.config.imageTag,
+          currentTag: () => resolveImageTag(state.config.imageTag),
           versionSource: containers.updates.sources.githubReleases(REPO),
           checkInterval: '24h',
         });
