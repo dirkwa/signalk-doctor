@@ -38,18 +38,23 @@ Save the cr output to a repo-local file (the repo `.gitignore`s `cr-review*.txt`
 - `"type": "module"`, ESM throughout. Relative imports use `.js` suffix.
 - Both `tsconfig.json` and `tsconfig.webapp.json` run with the full strict-TS set: `strict`, `noImplicitAny`, `noUnusedLocals`, `noUnusedParameters`, `noUncheckedIndexedAccess`, `noImplicitReturns`, `noFallthroughCasesInSwitch`, `noImplicitOverride`. Code must narrow against `undefined` when reading array slots or record entries.
 
+## Gotchas
+
+- **Plugin version and doctor-server image version are decoupled.** The default `imageTag: "auto"` resolves to a hand-bumped `DOCTOR_SERVER_VERSION` constant in `src/config/image-tag.ts` — _not_ to the plugin's `package.json` version. When a new signalk-doctor-server release lands on ghcr.io, bump that constant in its own PR. Don't restore the coupling — past attempts forced phantom server releases on every plugin-side ship and broke users with `manifest unknown` when the assumption was violated.
+
 ## File layout
 
-| Path                   | Purpose                                                              |
-| ---------------------- | -------------------------------------------------------------------- |
-| `src/index.ts`         | Plugin entry. Adopts the updater container via `updates.register()`. |
-| `src/types.ts`         | Hand-rolled mirror of signalk-container's API surface.               |
-| `src/config/schema.ts` | TypeBox schema + `SCHEMA_DEFAULTS` (spread at `start()` time).       |
-| `webapp/index.html`    | One-page redirect shell.                                             |
-| `webapp/src/main.ts`   | Fetches `/api/gui-url`, redirects, fallback rendering.               |
-| `vite.config.ts`       | Builds `webapp/` → `public/`, base `/signalk-doctor/`.               |
-| `tsconfig.json`        | Plugin TS → `plugin/`.                                               |
-| `tsconfig.webapp.json` | Webapp TS typecheck only (vite handles emit).                        |
+| Path                      | Purpose                                                              |
+| ------------------------- | -------------------------------------------------------------------- |
+| `src/index.ts`            | Plugin entry. Adopts the updater container via `updates.register()`. |
+| `src/types.ts`            | Hand-rolled mirror of signalk-container's API surface.               |
+| `src/config/schema.ts`    | TypeBox schema + `SCHEMA_DEFAULTS` (spread at `start()` time).       |
+| `src/config/image-tag.ts` | `DOCTOR_SERVER_VERSION` constant + `resolveImageTag("auto")` helper. |
+| `webapp/index.html`       | One-page redirect shell.                                             |
+| `webapp/src/main.ts`      | Fetches `/api/gui-url`, redirects, fallback rendering.               |
+| `vite.config.ts`          | Builds `webapp/` → `public/`, base `/signalk-doctor/`.               |
+| `tsconfig.json`           | Plugin TS → `plugin/`.                                               |
+| `tsconfig.webapp.json`    | Webapp TS typecheck only (vite handles emit).                        |
 
 ## Companion plugins (hard runtime dependencies)
 
