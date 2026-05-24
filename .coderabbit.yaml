@@ -105,8 +105,17 @@ reviews:
 
         - `"type": "module"` — relative imports use the `.js` suffix
           (NodeNext resolution). Do not suggest dropping it.
-        - tsconfig is strict. Avoid `any`. The webapp has its own
-          `tsconfig.webapp.json` for JSX/DOM types — keep the split.
+        - Both `tsconfig.json` and `tsconfig.webapp.json` run with the
+          full strict-TS set: `strict`, `noImplicitAny`,
+          `noUnusedLocals`, `noUnusedParameters`,
+          `noUncheckedIndexedAccess`, `noImplicitReturns`,
+          `noFallthroughCasesInSwitch`, `noImplicitOverride`. Code MUST
+          narrow against `undefined` when reading array slots or record
+          entries. Flag patterns like `arr[i].foo` without a prior
+          `if (arr[i] !== undefined)` check.
+        - Avoid `any`. The webapp has its own `tsconfig.webapp.json` for
+          JSX/DOM types (the plugin webapp is vanilla TS, NOT React —
+          see "Webapp is a redirect shell" below) — keep the split.
         - Node `>= 22.5.0` per `engines`. Native fetch on the plugin
           side; browser fetch in the webapp.
 
