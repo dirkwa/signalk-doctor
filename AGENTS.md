@@ -28,10 +28,15 @@ This repo is maintained by Dirk Wahrheit.
 npm run format
 npm run build:all        # lint + tsc + vite + vitest
 npm run ci-lint
-cr review --plain | tee /tmp/cr-review-<branch>.txt
+cr review --plain | tee cr-review-<branch>.txt
 ```
 
-Skip `cr review` only for `chore(release): X.Y.Z` PRs.
+Save the cr output to a repo-local file (the repo `.gitignore`s `cr-review*.txt`); `cr` is rate-limited so reruns are expensive. Skip `cr review` only for `chore(release): X.Y.Z` PRs.
+
+## TypeScript
+
+- `"type": "module"`, ESM throughout. Relative imports use `.js` suffix.
+- Both `tsconfig.json` and `tsconfig.webapp.json` run with the full strict-TS set: `strict`, `noImplicitAny`, `noUnusedLocals`, `noUnusedParameters`, `noUncheckedIndexedAccess`, `noImplicitReturns`, `noFallthroughCasesInSwitch`, `noImplicitOverride`. Code must narrow against `undefined` when reading array slots or record entries.
 
 ## File layout
 
