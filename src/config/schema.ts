@@ -10,13 +10,6 @@ export const ConfigSchema = Type.Object({
       'and that path is what survives plugin failures. Set to true only if you understand ' +
       "what you're doing.",
   }),
-  imageTag: Type.String({
-    default: 'auto',
-    title: 'Doctor image tag',
-    description:
-      '"auto" (default) tracks the signalk-doctor-server version this plugin release was tested against. ' +
-      'Pin to a specific version (e.g. "0.6.0") or use a floating tag (e.g. "latest") to override.',
-  }),
   externalUrl: Type.String({
     default: 'http://localhost:3004',
     title: 'Doctor console URL',
@@ -34,7 +27,6 @@ export type Config = Static<typeof ConfigSchema>;
 
 export const SCHEMA_DEFAULTS: Config = {
   managedContainer: false,
-  imageTag: 'auto',
   externalUrl: 'http://localhost:3004',
   logLevel: 'info',
 };
