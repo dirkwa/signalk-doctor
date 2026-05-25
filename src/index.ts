@@ -2,13 +2,16 @@ import type { Plugin, ServerAPI } from '@signalk/server-api';
 import type { IRouter, Request, Response } from 'express';
 import type { ContainerManagerApi } from './types.js';
 import { ConfigSchema, SCHEMA_DEFAULTS, type Config } from './config/schema.js';
-import { resolveImageTag } from './config/image-tag.js';
 
 const PLUGIN_ID = 'signalk-doctor';
 const CONTAINER_NAME = 'signalk-doctor-server';
 const IMAGE = 'ghcr.io/dirkwa/signalk-doctor-server';
 const REPO = 'dirkwa/signalk-doctor-server';
 const ENGINE_PORT = 3004;
+// Engine container Quadlet pins :latest by default (see signalk-universal-installer
+// AGENTS.md "Engine images run on :latest"). The honest "what version is running"
+// answer is the engine's own /api/health.version — see fetchEngineVersion() below.
+const ENGINE_TAG = 'latest';
 
 /**
  * Derive the Doctor Console URL from the incoming HTTP request rather
@@ -76,6 +79,42 @@ function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * Ask the engine container for its running semver via /api/health. Used as
+ * the `currentVersion` callback on signalk-container's update registration —
+ * the comparator prefers this over `currentTag` when present, so the
+ * "available vs running" diff is computed against the engine's honest
+ * RuntimeIdentity rather than a stale Quadlet tag string or a hand-bumped
+ * plugin-side constant.
+ *
+ * 3s timeout — signalk-container's update check is async and a hung engine
+ * shouldn't block its tick. Null on any failure; the comparator falls back
+ * to currentTag (which is "latest" — a floating tag the comparator treats
+ * as undefined-version, no upgrade offered).
+ */
+async function fetchEngineVersion(externalUrl: string): Promise<string | null> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    try {
+      const res = await fetch(`${externalUrl.replace(/\/$/, '')}/api/health`, {
+        signal: controller.signal,
+      });
+      if (!res.ok) return null;
+      const raw: unknown = await res.json();
+      const version =
+        typeof raw === 'object' && raw !== null
+          ? (raw as Record<string, unknown>).version
+          : undefined;
+      return typeof version === 'string' && version.length > 0 ? version : null;
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return null;
+  }
+}
+
 interface PluginInternalState {
   config: Config;
   app: ServerAPI;
@@ -122,7 +161,16 @@ export default function pluginFactory(app: ServerAPI): Plugin {
           pluginId: PLUGIN_ID,
           containerName: CONTAINER_NAME,
           image: IMAGE,
-          currentTag: () => resolveImageTag(state.config.imageTag),
+          // OperatorIntent: the Quadlet pins :latest, so that's the tag the
+          // operator tracks. signalk-container's comparator falls through to
+          // currentVersion() for the actual semver compare.
+          currentTag: () => ENGINE_TAG,
+          // RuntimeIdentity: ask the engine itself. /api/health.version is
+          // the canonical "what version am I" answer — read from the engine's
+          // package.json at boot. Eliminates the previous hand-bumped
+          // DOCTOR_SERVER_VERSION constant, which silently went stale on
+          // every engine release and forced an extra plugin PR per bump.
+          currentVersion: () => fetchEngineVersion(state.config.externalUrl),
           versionSource: containers.updates.sources.githubReleases(REPO),
           checkInterval: '24h',
         });
@@ -180,6 +228,10 @@ export default function pluginFactory(app: ServerAPI): Plugin {
           image: IMAGE,
           managedContainer: state.config.managedContainer,
           externalUrl: state.config.externalUrl,
+          // OperatorIntent — the channel the Quadlet tracks. The engine's
+          // real running version is at /api/health on the engine itself
+          // (not proxied here — callers go direct).
+          currentTag: ENGINE_TAG,
         });
       });
     },

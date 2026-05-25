@@ -40,21 +40,20 @@ Save the cr output to a repo-local file (the repo `.gitignore`s `cr-review*.txt`
 
 ## Gotchas
 
-- **Plugin version and doctor-server image version are decoupled.** The default `imageTag: "auto"` resolves to a hand-bumped `DOCTOR_SERVER_VERSION` constant in `src/config/image-tag.ts` — _not_ to the plugin's `package.json` version. When a new signalk-doctor-server release lands on ghcr.io, bump that constant in its own PR. Don't restore the coupling — past attempts forced phantom server releases on every plugin-side ship and broke users with `manifest unknown` when the assumption was violated.
+- **Ask the engine; don't mirror it.** The plugin no longer carries any plugin-side knowledge of which `signalk-doctor-server` version is running. The engine Quadlet pins `:latest` (see signalk-universal-installer AGENTS.md "Engine images run on `:latest`"), so the `currentTag` passed to signalk-container's update comparator is the literal string `"latest"` — a floating tag the comparator treats as undefined-version on its own. The `currentVersion` callback HTTP-fetches `/api/health.version` on the engine to supply the honest RuntimeIdentity for the diff. This replaces an earlier model that hand-bumped a `DOCTOR_SERVER_VERSION` constant on every engine release — it silently went stale, forced a plugin PR + release per engine release, and was the wrong layer to track engine version at. There's no plugin-side configuration for the engine tag anymore (`imageTag` config option removed) because there's nothing to configure: the Quadlet owns OperatorIntent, the engine owns RuntimeIdentity, GHCR owns LatestAvailable.
 
 ## File layout
 
-| Path                      | Purpose                                                              |
-| ------------------------- | -------------------------------------------------------------------- |
-| `src/index.ts`            | Plugin entry. Adopts the updater container via `updates.register()`. |
-| `src/types.ts`            | Hand-rolled mirror of signalk-container's API surface.               |
-| `src/config/schema.ts`    | TypeBox schema + `SCHEMA_DEFAULTS` (spread at `start()` time).       |
-| `src/config/image-tag.ts` | `DOCTOR_SERVER_VERSION` constant + `resolveImageTag("auto")` helper. |
-| `webapp/index.html`       | One-page redirect shell.                                             |
-| `webapp/src/main.ts`      | Fetches `/api/gui-url`, redirects, fallback rendering.               |
-| `vite.config.ts`          | Builds `webapp/` → `public/`, base `/signalk-doctor/`.               |
-| `tsconfig.json`           | Plugin TS → `plugin/`.                                               |
-| `tsconfig.webapp.json`    | Webapp TS typecheck only (vite handles emit).                        |
+| Path                   | Purpose                                                              |
+| ---------------------- | -------------------------------------------------------------------- |
+| `src/index.ts`         | Plugin entry. Adopts the updater container via `updates.register()`. |
+| `src/types.ts`         | Hand-rolled mirror of signalk-container's API surface.               |
+| `src/config/schema.ts` | TypeBox schema + `SCHEMA_DEFAULTS` (spread at `start()` time).       |
+| `webapp/index.html`    | One-page redirect shell.                                             |
+| `webapp/src/main.ts`   | Fetches `/api/gui-url`, redirects, fallback rendering.               |
+| `vite.config.ts`       | Builds `webapp/` → `public/`, base `/signalk-doctor/`.               |
+| `tsconfig.json`        | Plugin TS → `plugin/`.                                               |
+| `tsconfig.webapp.json` | Webapp TS typecheck only (vite handles emit).                        |
 
 ## Companion plugins (hard runtime dependencies)
 
