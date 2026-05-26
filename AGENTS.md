@@ -8,7 +8,10 @@ Thin-shell SignalK plugin that deep-links into the `signalk-doctor-server` engin
 - **Never crash signalk-server.** On any failure (signalk-container missing, container not running, registration error), call `app.setPluginError(...)` — never throw out of `start()`.
 - **Loose coupling.** Hand-rolled `src/types.ts` mirrors signalk-container's API surface. Never `import` signalk-container directly.
 - **Spread schema defaults at start.** Signal K does not seed schema defaults at runtime; spread `SCHEMA_DEFAULTS` over the incoming config in `start()`. (See signalk-backup AGENTS.md "Gotchas".)
-- **Webapp is a redirect shell.** No React. Vanilla TS that fetches `/api/gui-url`, then `window.location.replace`s. If the updater container is unreachable, render a clear "use signalk-recovery" fallback (CC-3).
+- **Webapp is an embedded panel, not a redirect shell.** Keyword `signalk-embeddable-webapp`. Built as a Vite Module Federation remote exposing `./AppPanel` (see `webapp/src/AppPanel.tsx`); the SignalK admin loads `/signalk-doctor/remoteEntry.js` and renders us at `/admin/#/e/Doctor` with its sidebar still visible — that's the whole point of going through Module Federation rather than a standalone `signalk-webapp`. The panel renders one full-height `<iframe>` pointing at the plugin's same-origin reverse proxy to the engine console (`/plugins/signalk-doctor/console/`). React 19, shared as a singleton with the admin shell so hooks work across the boundary.
+- **Same-origin proxy is non-negotiable for HTTPS/Traefik.** The proxy in `src/proxy.ts` forwards `/plugins/signalk-doctor/console/*` to the configured engine `externalUrl` (defaults to the local engine container). Without it, an HTTPS admin would try to iframe HTTP and trip mixed-content; behind a reverse proxy the cross-origin direct iframe would also break cookies/SSE. The proxy is SSE-aware (no response buffering on non-HTML responses, `Cache-Control: no-transform` injected on `text/event-stream` to defeat signalk-server's `compression()` middleware) and injects `<meta name="api-base" content="/plugins/signalk-doctor/console">` into HTML responses so the engine UI knows to prefix its API calls. The meta-tag literal is intentional: it's the contract the engine repo reads — kept concrete here so the cross-repo dependency is obvious.
+- **Engine UI contract (cross-repo).** The engine (`signalk-doctor-server` ≥ 0.7.8) must (a) build its Vite webapp with `base: './'` so its HTML emits relative asset URLs (otherwise absolute `/assets/` paths bypass the proxy and 404 against signalk-server's root), and (b) read the injected `api-base` meta tag in its API client to prefix all paths. Changing the proxy mount path requires a coordinated engine release.
+- **No `dangerouslySetInnerHTML`.** JSX escapes interpolated text by default; never reach for `dangerouslySetInnerHTML` in `AppPanel.tsx`. If you need rich error text, build it with React elements.
 
 ## Workflow Conventions
 
@@ -44,16 +47,16 @@ Save the cr output to a repo-local file (the repo `.gitignore`s `cr-review*.txt`
 
 ## File layout
 
-| Path                   | Purpose                                                              |
-| ---------------------- | -------------------------------------------------------------------- |
-| `src/index.ts`         | Plugin entry. Adopts the updater container via `updates.register()`. |
-| `src/types.ts`         | Hand-rolled mirror of signalk-container's API surface.               |
-| `src/config/schema.ts` | TypeBox schema + `SCHEMA_DEFAULTS` (spread at `start()` time).       |
-| `webapp/index.html`    | One-page redirect shell.                                             |
-| `webapp/src/main.ts`   | Fetches `/api/gui-url`, redirects, fallback rendering.               |
-| `vite.config.ts`       | Builds `webapp/` → `public/`, base `/signalk-doctor/`.               |
-| `tsconfig.json`        | Plugin TS → `plugin/`.                                               |
-| `tsconfig.webapp.json` | Webapp TS typecheck only (vite handles emit).                        |
+| Path                      | Purpose                                                                                                                                                                                  |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/index.ts`            | Plugin entry. Adopts the doctor container via `updates.register()`; mounts the console proxy under `registerWithRouter()`.                                                               |
+| `src/proxy.ts`            | SSE-aware HTTP reverse proxy to the engine container. Injects `<meta name="api-base">` into HTML responses, appends `Cache-Control: no-transform` to SSE responses.                      |
+| `src/types.ts`            | Hand-rolled mirror of signalk-container's API surface.                                                                                                                                   |
+| `src/config/schema.ts`    | TypeBox schema + `SCHEMA_DEFAULTS` (spread at `start()` time).                                                                                                                           |
+| `webapp/src/AppPanel.tsx` | Module-Federation-exposed React component. Probes the plugin info endpoint, then renders a full-height `<iframe>` of `/plugins/signalk-doctor/console/`.                                 |
+| `vite.config.ts`          | Vite + `@vitejs/plugin-react` + `@module-federation/vite`. Exposes `./AppPanel`, shares React/ReactDOM as singletons (host-provided), bundles jsx-runtime. Builds `webapp/` → `public/`. |
+| `tsconfig.json`           | Plugin TS → `plugin/`.                                                                                                                                                                   |
+| `tsconfig.webapp.json`    | Webapp TS typecheck only (vite handles emit). `jsx: react-jsx`.                                                                                                                          |
 
 ## Companion plugins (hard runtime dependencies)
 
