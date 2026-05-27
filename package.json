@@ -1,6 +1,6 @@
 {
   "name": "signalk-doctor",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "Thin-shell SignalK plugin that surfaces the signalk-doctor-server console in the admin UI",
   "main": "plugin/index.js",
   "type": "module",
