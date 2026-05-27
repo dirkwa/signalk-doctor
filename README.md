@@ -8,8 +8,6 @@ Thin-shell SignalK plugin that embeds the SignalK Doctor Console in the admin UI
 
 The heavy lifting (read-only probes, snapshot listing, last-known-good restore) happens in the [signalk-doctor-server](https://github.com/dirkwa/signalk-doctor-server) container, which the [signalk-universal-installer](https://github.com/dirkwa/signalk-universal-installer) drops as a systemd Quadlet. This plugin is just the admin-UI surface for it.
 
-> Status: **0.3.0**. Pairs with signalk-doctor-server 0.x.
-
 ## What this plugin does
 
 - Polls for `globalThis.__signalk_containerManager` (provided by `signalk-container`).

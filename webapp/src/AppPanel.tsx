@@ -1,5 +1,6 @@
 /**
- * Embedded panel rendered by the SignalK admin UI's /admin/#/e/Doctor route.
+ * Embedded panel rendered by the SignalK admin UI's /admin/#/e/signalk_doctor
+ * route (the admin derives the route segment from the package name).
  *
  * Renders an iframe pointing at the plugin's same-origin proxy to the
  * signalk-doctor-server console. Same-origin keeps cookies, SSE, and
