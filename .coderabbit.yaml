@@ -10,6 +10,7 @@ reviews:
       - 'chore(release):'
       - 'chore(deps):'
       - 'chore(deps-dev):'
+      - 'chore(bump):'
       - '[skip review]'
       - 'WIP'
     ignore_usernames:
@@ -26,7 +27,10 @@ reviews:
     - '!**/*.min.css'
     - '!**/dist/**'
     - '!**/build/**'
+    - '!**/plugin/**'
+    - '!**/public/**'
     - '!**/node_modules/**'
+    - '!**/cr-review*.txt'
 
   high_level_summary_instructions: |
     Write summaries in present tense. Describe what the code does, not what
@@ -40,23 +44,30 @@ reviews:
         Focus on files changed since `master`. Think about how changes
         interact with the rest of the stack, not just the diff in isolation.
 
-        signalk-doctor is a **thin-shell SignalK plugin + redirect webapp**
-        that deep-links into the
+        signalk-doctor is a **thin-shell SignalK plugin + embedded webapp
+        panel** that surfaces the
         [signalk-doctor-server](https://github.com/dirkwa/signalk-doctor-server)
-        engine container. It mirrors the
-        [signalk-backup](https://github.com/dirkwa/signalk-backup) pattern.
+        engine container inside the SignalK admin UI. It mirrors the
+        [signalk-backup](https://github.com/dirkwa/signalk-backup) pattern
+        for container adoption.
 
-        1. **Plugin (`src/`, plain Node, runs in SignalK server process)**
+        1. **Plugin (`src/`, TypeScript, runs in SignalK server process)**
            - Adopts the doctor-server container started by the bash
              installer via `signalk-container`'s
              `__signalk_containerManager` and `updates.register()`.
-           - Exposes `GET /api/gui-url` returning the doctor-server URL.
-        2. **Webapp (`webapp/`, vanilla TS, NOT React, served via SignalK
-           `signalk-webapp` keyword at `/signalk-doctor/`)**
-           - Redirect shell: fetches `/api/gui-url`, then
-             `window.location.replace()`.
-           - Fallback rendering when the doctor container is unreachable
-             (CC-3 — point the user at `~/.local/bin/signalk-recovery`).
+           - Mounts an SSE-aware reverse proxy at
+             `/plugins/signalk-doctor/console/*` that forwards to the
+             engine container's `externalUrl`.
+        2. **Webapp (`webapp/`, React 19 via Vite Module Federation,
+           keyword `signalk-embeddable-webapp`)**
+           - Built as a Vite Module Federation remote exposing
+             `./AppPanel`. The SignalK admin loads
+             `/signalk-doctor/remoteEntry.js` and renders the panel at
+             `/admin/#/e/Doctor` with the sidebar still visible.
+           - The panel renders ONE full-height `<iframe>` pointing at
+             the plugin's same-origin proxy
+             (`/plugins/signalk-doctor/console/`). React/ReactDOM are
+             shared as singletons with the admin shell.
 
         ## Adopt, don't manage
 
@@ -72,10 +83,55 @@ reviews:
         ## Never crash signalk-server
 
         On any failure (signalk-container plugin missing, container not
-        running, registration error), call `app.setPluginError(...)` —
-        never throw out of `start()`. A thrown plugin can take down the
-        whole SignalK server. Flag any `throw` in `start()` or top-level
-        plugin code paths.
+        running, registration error, proxy upstream error), call
+        `app.setPluginError(...)` — never throw out of `start()`. A
+        thrown plugin can take down the whole SignalK server. Flag any
+        `throw` in `start()` or top-level plugin code paths.
+
+        ## Ask the engine; don't mirror it
+
+        The plugin carries **no plugin-side knowledge of the engine
+        version**. The engine Quadlet pins `:latest`, so the `currentTag`
+        passed to signalk-container's update comparator is the literal
+        string `"latest"` — the comparator treats this as
+        undefined-version on its own. The `currentVersion` callback
+        HTTP-fetches `/api/health.version` on the engine to supply the
+        honest RuntimeIdentity for the diff.
+
+        Flag any reintroduction of:
+
+        - A `DOCTOR_SERVER_VERSION` constant (removed — silently went
+          stale, forced a plugin PR + release per engine release).
+        - An `imageTag` config option (removed — nothing to configure;
+          Quadlet owns OperatorIntent, engine owns RuntimeIdentity,
+          GHCR owns LatestAvailable).
+        - Any bumping of an engine version literal in this repo.
+
+        ## Same-origin proxy is non-negotiable
+
+        `src/proxy.ts` forwards `/plugins/signalk-doctor/console/*` to
+        the configured engine `externalUrl`. Without it:
+
+        - HTTPS admin trying to iframe HTTP engine → mixed-content block.
+        - Cross-origin direct iframe → broken cookies / SSE behind
+          Traefik / reverse proxy setups.
+
+        The proxy has three non-obvious behaviors. Changes to any of
+        them must be deliberate; flag accidental regressions:
+
+        1. **SSE-aware:** no response buffering on non-HTML responses.
+           `Cache-Control: no-transform` is injected on
+           `text/event-stream` responses to defeat signalk-server's
+           `compression()` middleware.
+        2. **`<meta name="api-base" content="/plugins/signalk-doctor/console">`
+           injection** into HTML responses. The engine repo reads this
+           tag to prefix its API client calls. The literal is the
+           cross-repo contract — keep it concrete.
+        3. **Mount path is part of a cross-repo contract.** The engine
+           UI (`signalk-doctor-server` ≥ 0.7.8) must build its Vite
+           webapp with `base: './'` so its HTML emits relative asset
+           URLs. Changing the proxy mount path requires a coordinated
+           engine release.
 
         ## Loose coupling to signalk-container
 
@@ -90,9 +146,9 @@ reviews:
 
         ## Schema defaults spread at start
 
-        Signal K does NOT seed schema defaults at runtime. Configs come in
-        partial. Spread `SCHEMA_DEFAULTS` over the incoming config in
-        `start()`:
+        Signal K does NOT seed schema defaults at runtime. Configs come
+        in partial. Spread `SCHEMA_DEFAULTS` over the incoming config
+        in `start()`:
 
         ```ts
         const cfg = { ...SCHEMA_DEFAULTS, ...incoming };
@@ -113,45 +169,62 @@ reviews:
           narrow against `undefined` when reading array slots or record
           entries. Flag patterns like `arr[i].foo` without a prior
           `if (arr[i] !== undefined)` check.
-        - Avoid `any`. The webapp has its own `tsconfig.webapp.json` for
-          JSX/DOM types (the plugin webapp is vanilla TS, NOT React —
-          see "Webapp is a redirect shell" below) — keep the split.
+        - Avoid `any`. The webapp has its own `tsconfig.webapp.json`
+          with `jsx: react-jsx` — keep the split.
         - Node `>= 22.5.0` per `engines`. Native fetch on the plugin
           side; browser fetch in the webapp.
 
-        ## Webapp is a redirect shell, NOT React
+        ## Webapp is a Module Federation panel, not a redirect shell
 
-        - **Vanilla TS only.** Do not suggest adding React, Vue,
-          reactstrap, or any UI framework. The webapp's only job is to
-          fetch `/api/gui-url` and redirect; if the container is
-          unreachable, render a fallback message pointing at
-          `~/.local/bin/signalk-recovery`.
-        - Use `ReturnType<typeof setInterval>` for timer handles in
-          browser code, not `NodeJS.Timeout` (Node type in webapp/).
-        - All API calls hit the plugin proxy at
+        Older revisions of this repo had a vanilla-TS redirect webapp.
+        The current architecture is different — flag attempts to
+        regress to it:
+
+        - **React 19 + Vite Module Federation.** The webapp builds a
+          remote at `/signalk-doctor/remoteEntry.js` exposing
+          `./AppPanel`. The admin loads it dynamically.
+        - React and ReactDOM are **shared singletons** (host-provided)
+          so hooks work across the Module Federation boundary. Don't
+          bundle them.
+        - The `jsx-runtime` is bundled (otherwise the remote can't
+          construct elements before the host has resolved the shared
+          React).
+        - The panel renders a SINGLE full-height `<iframe>` to the
+          proxy URL. Don't add tabs, in-panel React UI for engine
+          features, or anything that bypasses the iframe — the engine
+          owns its own UI.
+        - **No `dangerouslySetInnerHTML`.** JSX escapes interpolated
+          text by default. For rich error text, build it with React
+          elements.
+        - Plugin-side fetches in the webapp hit
           `/plugins/signalk-doctor/api/*` — same origin, no CORS,
           inherits SignalK auth.
-        - **No new top-level dependencies** in the webapp without
-          justification. The fallback page should be plain HTML/CSS.
 
         ## File layout
 
         See AGENTS.md. Notable:
 
         - `src/types.ts` — hand-rolled mirror, not generated.
+        - `src/proxy.ts` — SSE-aware reverse proxy with meta-tag
+          injection (see "Same-origin proxy" above).
         - `src/config/schema.ts` — TypeBox schema PLUS `SCHEMA_DEFAULTS`
           export (spread at `start()`).
-        - `vite.config.ts` — builds `webapp/` → `public/` with base
-          `/signalk-doctor/`. Don't change the base — the Signal K
-          server serves the webapp at that path.
+        - `webapp/src/AppPanel.tsx` — Module-Federation-exposed React
+          component.
+        - `vite.config.ts` — Vite + `@vitejs/plugin-react` +
+          `@module-federation/vite`. Exposes `./AppPanel`, shares
+          React/ReactDOM as singletons. Base `/signalk-doctor/`.
+          Don't change the base — the SignalK server serves the
+          webapp at that path.
 
         ## Echo comments
 
-        Flag any comment that merely restates what the code already says.
-        Examples to flag:
+        Flag any comment that merely restates what the code already
+        says. Examples to flag:
 
         - `// Register the container` above `containers.updates.register(...)`
-        - `// Fetch the URL` above `fetch('/api/gui-url')`
+        - `// Mount the proxy` above `router.use('/console', proxy(...))`
+        - `// Render the panel` above `return <Panel />`
 
         Replace with comments explaining *why*, not *what*. Or delete.
 
@@ -163,9 +236,9 @@ reviews:
           likely to fall out of sync as code evolves.
         - Step-by-step build/development instructions that duplicate or
           shadow the code itself.
-        - Implementation status, progress markers, "currently implemented
-          as X" wording. Build narratives belong in PR descriptions, not
-          in repo docs.
+        - Implementation status, progress markers, "currently
+          implemented as X" wording. Build narratives belong in PR
+          descriptions, not in repo docs.
 
         Architecture decisions and conceptual design rationale are fine.
 
@@ -176,11 +249,18 @@ reviews:
         names in comments, dangling imports, stale TODOs from a
         superseded approach, etc.
 
+        Common ones to watch for after the redirect-shell → embedded-
+        panel migration:
+
+        - References to `gui-url`, `/api/gui-url`, `window.location.replace`.
+        - References to `DOCTOR_SERVER_VERSION` or `imageTag`.
+        - "Vanilla TS webapp" / "redirect shell" language.
+
         ## Unchecked items in test plans
 
-        If the PR description has a checklist with unchecked items, flag
-        it. Either the work isn't done, or the unchecked items should be
-        removed.
+        If the PR description has a checklist with unchecked items,
+        flag it. Either the work isn't done, or the unchecked items
+        should be removed.
 
         ## Commit / PR conventions
 
@@ -190,9 +270,9 @@ reviews:
         - One logical change per commit and per PR.
         - **No AI attribution** in commits, PR bodies, or code. Don't
           mention Claude, AI, or add `Co-Authored-By` trailers.
-        - **No version bumps** in feature/fix PRs. Versions are bumped in
-          dedicated `chore(release):` PRs only when the user explicitly
-          asks.
+        - **No version bumps** in feature/fix PRs. Versions are bumped
+          in dedicated `chore(release):` PRs only when the user
+          explicitly asks.
         - PR descriptions: no checkboxes. "Tested" lists what was
           actually verified, not what's planned.
 
@@ -204,11 +284,15 @@ reviews:
           manage" above.
         - The hand-rolled `src/types.ts` mirror of signalk-container's
           API surface — loose coupling is required.
-        - The vanilla-TS webapp instead of React — chosen on purpose,
-          this is a redirect shell.
-        - The schema-defaults spread in `start()` — required by Signal K's
-          runtime not seeding defaults.
+        - The `<meta name="api-base">` injection literal in the proxy
+          — cross-repo contract, must stay concrete.
+        - The single-iframe panel without in-panel React UI for
+          engine features — the engine owns its own UI.
+        - The schema-defaults spread in `start()` — required by
+          Signal K's runtime not seeding defaults.
         - Calling `app.setPluginError(...)` instead of throwing on any
           failure path — required to keep signalk-server alive.
         - `signalk.requires: ['signalk-container']` without a matching
           npm dependency — see "Loose coupling" above.
+        - The absence of a plugin-side engine version constant —
+          intentional, the plugin asks the engine at runtime.
