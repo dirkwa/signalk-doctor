@@ -1,17 +1,20 @@
 # signalk-doctor
 
-Thin-shell SignalK plugin that opens the SignalK Doctor Console from the admin UI and registers the doctor engine container for image-update tracking.
+> [!IMPORTANT]
+> **This plugin is only meant to be used as part of the [signalk-universal-installer](https://github.com/dirkwa/signalk-universal-installer) stack.**
+> It is a thin shell with no value on its own — it surfaces the [signalk-doctor-server](https://github.com/dirkwa/signalk-doctor-server) engine container, whose lifecycle is owned by the systemd Quadlet the installer drops. Installing this plugin standalone (without that engine container and the installer's setup) does nothing useful. Use the installer; don't install this from the appstore by itself.
 
-The heavy lifting (read-only probes, snapshot listing, last-known-good restore) happens in the [signalk-doctor-server](https://github.com/dirkwa/signalk-doctor-server) container, which the [signalk-universal-installer](https://github.com/dirkwa/signalk-universal-installer) drops as a systemd Quadlet. This plugin is just the deep-link from the admin UI.
+Thin-shell SignalK plugin that embeds the SignalK Doctor Console in the admin UI and registers the doctor engine container for image-update tracking.
 
-> Status: **0.1.0**. First release; pairs with signalk-doctor-server 0.x.
+The heavy lifting (read-only probes, snapshot listing, last-known-good restore) happens in the [signalk-doctor-server](https://github.com/dirkwa/signalk-doctor-server) container, which the [signalk-universal-installer](https://github.com/dirkwa/signalk-universal-installer) drops as a systemd Quadlet. This plugin is just the admin-UI surface for it.
 
 ## What this plugin does
 
 - Polls for `globalThis.__signalk_containerManager` (provided by `signalk-container`).
 - Calls `containers.updates.register({...})` to enroll the doctor container for update notifications — without `ensureRunning`. The container's lifecycle is owned by systemd, not this plugin (marine-reliability principle: a broken plugin must never break recovery).
 - Verifies the doctor container is `running`; on any other state, raises a plugin error in the admin UI explaining how to recover (without taking the server down).
-- Serves a webapp at `/signalk-doctor/` that fetches `GET /plugins/signalk-doctor/api/gui-url` and redirects to the Doctor Console (default `http://localhost:3004`).
+- Renders an embedded panel inside the admin UI (at `/admin/#/e/signalk_doctor`, with the admin sidebar still visible) as a Module Federation remote, rather than redirecting away to a standalone page.
+- Reverse-proxies the engine console same-origin under `/plugins/signalk-doctor/console/`, so the embedded panel can iframe the Doctor Console without mixed-content or CORS problems — and it works behind an HTTPS reverse proxy (Traefik/nginx) in front of signalk-server. The proxy forwards to the configured `externalUrl` (default `http://localhost:3004`).
 
 ## What this plugin does **not** do
 
@@ -23,8 +26,7 @@ The heavy lifting (read-only probes, snapshot listing, last-known-good restore) 
 | Field              | Default                 | Purpose                                                                                                                                                               |
 | ------------------ | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `managedContainer` | `false`                 | Advanced opt-in. If `true`, the plugin will (eventually) attempt to start the container itself. Default off — the bash installer's Quadlet is the authoritative path. |
-| `imageTag`         | `latest`                | Image tag to track for update notifications.                                                                                                                          |
-| `externalUrl`      | `http://localhost:3004` | Where the Doctor Console is reachable.                                                                                                                                |
+| `externalUrl`      | `http://localhost:3004` | Where the Doctor Console is reachable; the same-origin console proxy forwards here.                                                                                   |
 | `logLevel`         | `info`                  | `error` \| `info` \| `debug`.                                                                                                                                         |
 
 ## Companion repos

@@ -11,7 +11,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 // shell loads our remoteEntry.js from that path.
 //
 // Architecture: this webapp is a Module Federation remote consumed by the
-// SignalK admin UI's Embedded route (/admin/#/e/Doctor). The exposed
+// SignalK admin UI's Embedded route (/admin/#/e/signalk_doctor). The exposed
 // ./AppPanel component is rendered inside the admin's main view while the
 // sidebar stays visible — that's the whole reason we use Module Federation
 // rather than shipping a standalone webapp.
