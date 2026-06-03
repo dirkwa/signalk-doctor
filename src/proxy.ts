@@ -1,6 +1,6 @@
 /**
  * Same-origin reverse proxy from /plugins/signalk-doctor/console/* to the
- * signalk-doctor-server engine container (default http://localhost:3004).
+ * signalk-doctor-server engine container over loopback (http://127.0.0.1:3004).
  *
  * Why same-origin: lets the embedded React panel in the SignalK admin UI
  * iframe the engine console without mixed-content (HTTPS-to-HTTP) or CORS
