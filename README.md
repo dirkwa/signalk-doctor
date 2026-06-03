@@ -14,7 +14,7 @@ The heavy lifting (read-only probes, snapshot listing, last-known-good restore) 
 - Calls `containers.updates.register({...})` to enroll the doctor container for update notifications — without `ensureRunning`. The container's lifecycle is owned by systemd, not this plugin (marine-reliability principle: a broken plugin must never break recovery).
 - Verifies the doctor container is `running`; on any other state, raises a plugin error in the admin UI explaining how to recover (without taking the server down).
 - Renders an embedded panel inside the admin UI (at `/admin/#/e/signalk_doctor`, with the admin sidebar still visible) as a Module Federation remote, rather than redirecting away to a standalone page.
-- Reverse-proxies the engine console same-origin under `/plugins/signalk-doctor/console/`, so the embedded panel can iframe the Doctor Console without mixed-content or CORS problems — and it works behind an HTTPS reverse proxy (Traefik/nginx) in front of signalk-server. The proxy forwards to the configured `externalUrl` (default `http://localhost:3004`).
+- Reverse-proxies the engine console same-origin under `/plugins/signalk-doctor/console/`, so the embedded panel can iframe the Doctor Console without mixed-content or CORS problems — and it works behind an HTTPS reverse proxy (Traefik/nginx) in front of signalk-server. The proxy forwards to the co-located engine over loopback (`http://127.0.0.1:3004`); signalk-server runs `Network=host` so loopback always reaches it with no DNS.
 
 ## What this plugin does **not** do
 
@@ -23,11 +23,10 @@ The heavy lifting (read-only probes, snapshot listing, last-known-good restore) 
 
 ## Configuration
 
-| Field              | Default                 | Purpose                                                                                                                                                               |
-| ------------------ | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `managedContainer` | `false`                 | Advanced opt-in. If `true`, the plugin will (eventually) attempt to start the container itself. Default off — the bash installer's Quadlet is the authoritative path. |
-| `externalUrl`      | `http://localhost:3004` | Where the Doctor Console is reachable; the same-origin console proxy forwards here.                                                                                   |
-| `logLevel`         | `info`                  | `error` \| `info` \| `debug`.                                                                                                                                         |
+| Field              | Default | Purpose                                                                                                                                                   |
+| ------------------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `managedContainer` | `false` | Advanced opt-in. If `true`, the plugin attempts to start the container itself instead of relying on the installer's Quadlet. Leave `false` in production. |
+| `logLevel`         | `info`  | `error` \| `info` \| `debug`.                                                                                                                             |
 
 ## Companion repos
 
