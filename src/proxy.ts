@@ -88,7 +88,7 @@ export function createConsoleProxy(opts: ProxyOptions) {
     // Watchdog: arm before sending the request; the 'response' callback
     // (or any of the error paths below) clears it. If headers don't arrive
     // within the window we destroy the upstream socket and fail the client
-    // with 504; the existing 'error' handler turns that into a clean
+    // with 502; the existing 'error' handler turns that into a clean
     // response.
     let headerTimer: ReturnType<typeof setTimeout>;
 
