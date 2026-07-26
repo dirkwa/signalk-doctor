@@ -12,7 +12,13 @@ const PLUGIN_ID = 'signalk-doctor';
 const CONTAINER_NAME = 'signalk-doctor-server';
 const IMAGE = 'ghcr.io/dirkwa/signalk-doctor-server';
 const REPO = 'dirkwa/signalk-doctor-server';
-const ENGINE_PORT = 3004;
+// Default engine port; overridable via SIGNALK_DOCTOR_ENGINE_PORT for
+// non-default installs and for e2e tests that point the plugin at a mock
+// engine. Falls back to 3004 on an unset/invalid value.
+const ENGINE_PORT = ((): number => {
+  const raw = Number(process.env.SIGNALK_DOCTOR_ENGINE_PORT);
+  return Number.isInteger(raw) && raw > 0 && raw < 65536 ? raw : 3004;
+})();
 // Engine container Quadlet pins :latest by default (see signalk-universal-installer
 // AGENTS.md "Engine images run on :latest"). The honest "what version is running"
 // answer is the engine's own /api/health.version — see fetchEngineVersion() below.
@@ -170,6 +176,13 @@ interface PluginInternalState {
   containers?: ContainerManagerApi;
   notifier?: ProbeNotifier;
   pollTimer?: ReturnType<typeof setInterval>;
+  // Set true in stop(); a poll that was already in flight when stop() ran
+  // checks this before reconciling so it can't re-raise alarms after clearAll.
+  pollStopped: boolean;
+  // In-flight guard: setInterval fires on a fixed period regardless of how
+  // long a cycle takes, so a slow engine could overlap cycles and produce
+  // out-of-order writes. Skip a tick while one is still running.
+  pollInFlight: boolean;
 }
 
 // Minimum poll interval; also the schema minimum. Guards against a mistyped
@@ -187,13 +200,34 @@ function startNotificationPolling(state: PluginInternalState): void {
   if (!state.config.publishNotifications) return;
   const notifier = new ProbeNotifier(state.app, PLUGIN_ID);
   state.notifier = notifier;
+  state.pollStopped = false;
 
-  const intervalS = Math.max(
-    MIN_POLL_INTERVAL_S,
-    Math.floor(state.config.notificationIntervalSeconds),
-  );
+  // A malformed interval (NaN/Infinity from bad config) must not degrade
+  // setInterval into a ~1ms hot loop — fall back to the schema default, then
+  // apply the floor.
+  const raw = Math.floor(state.config.notificationIntervalSeconds);
+  const seconds = Number.isFinite(raw) ? raw : SCHEMA_DEFAULTS.notificationIntervalSeconds;
+  const intervalS = Math.max(MIN_POLL_INTERVAL_S, seconds);
+
   const cycle = (): void => {
-    void pollOnce(ENGINE_LOCAL_URL, notifier, (msg) => state.app.debug(msg));
+    if (state.pollStopped || state.pollInFlight) return; // no overlap, no post-stop run
+    state.pollInFlight = true;
+    void (async () => {
+      try {
+        await pollOnce(
+          ENGINE_LOCAL_URL,
+          notifier,
+          (msg) => state.app.debug(msg),
+          () => state.pollStopped, // skip reconcile if stop() ran mid-fetch
+        );
+      } catch (err) {
+        // reconcile()/handleMessage() could throw — never let it become an
+        // unhandled rejection or take down the timer.
+        state.app.debug(`notification poll cycle failed: ${errMsg(err)}`);
+      } finally {
+        state.pollInFlight = false;
+      }
+    })();
   };
   cycle(); // fire once now so a warning surfaces without waiting a full interval
   state.pollTimer = setInterval(cycle, intervalS * 1000);
@@ -203,6 +237,8 @@ export default function pluginFactory(app: ServerAPI): Plugin {
   const state: PluginInternalState = {
     config: { ...SCHEMA_DEFAULTS },
     app,
+    pollStopped: false,
+    pollInFlight: false,
   };
 
   const plugin: Plugin = {
@@ -221,6 +257,13 @@ export default function pluginFactory(app: ServerAPI): Plugin {
       // missing keys land at their declared defaults. (signalk-backup AGENTS.md, "Gotchas".)
       const config = { ...SCHEMA_DEFAULTS, ...(rawConfig as Partial<Config>) };
       state.config = config;
+
+      // Republish the engine's warn/fail health probes as SignalK
+      // notifications. Started BEFORE the container-manager wait: it only needs
+      // the engine's /api/probes (loopback), is independent of signalk-container,
+      // and must keep working even when the manager never loads (the early
+      // return below). Never throws — the poll loop swallows its own errors.
+      startNotificationPolling(state);
 
       const containers = await waitForContainerManager(30_000);
       if (!containers) {
@@ -285,16 +328,13 @@ export default function pluginFactory(app: ServerAPI): Plugin {
       } catch (err) {
         app.setPluginError(`could not probe ${CONTAINER_NAME}: ${errMsg(err)}`);
       }
-
-      // Republish the engine's warn/fail health probes as SignalK
-      // notifications so alarm panels see them. Independent of
-      // signalk-container (it only needs the engine's /api/probes), so it runs
-      // even in the container-manager-missing path above; guarded only by the
-      // config toggle. Never throws — a bad interval or fetch is swallowed.
-      startNotificationPolling(state);
     },
 
     stop(): void {
+      // Mark stopped FIRST so any poll already in flight sees it and skips its
+      // reconcile — otherwise a completed fetch could re-raise alarms right
+      // after clearAll() below.
+      state.pollStopped = true;
       if (state.pollTimer) {
         clearInterval(state.pollTimer);
         state.pollTimer = undefined;

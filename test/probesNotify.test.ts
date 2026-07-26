@@ -150,9 +150,14 @@ describe('fetchProbes', () => {
     expect(await fetchProbes('http://127.0.0.1:3004')).toBeNull();
   });
 
-  it('tolerates a malformed body (missing results) → empty list, not null', async () => {
+  it('returns null when results is missing (cannot distinguish from a broken response)', async () => {
     fetchSpy.mockResolvedValueOnce(jsonRes({ nope: true }));
     expect(await fetchProbes('http://127.0.0.1:3004')).toBeNull();
+  });
+
+  it('returns an empty list when results is present but empty', async () => {
+    fetchSpy.mockResolvedValueOnce(jsonRes({ results: [] }));
+    expect(await fetchProbes('http://127.0.0.1:3004')).toEqual([]);
   });
 
   it('skips malformed result entries but keeps valid ones', async () => {
@@ -161,6 +166,14 @@ describe('fetchProbes', () => {
     );
     const r = await fetchProbes('http://127.0.0.1:3004');
     expect(r).toEqual([{ id: 'good', label: 'GOOD', status: 'warn', message: 'msg' }]);
+  });
+
+  it('drops a probe with an empty id (would produce notifications.doctor.)', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      jsonRes({ results: [probe('', 'warn'), probe('ok-id', 'warn')] }),
+    );
+    const r = await fetchProbes('http://127.0.0.1:3004');
+    expect(r).toEqual([{ id: 'ok-id', label: 'OK-ID', status: 'warn', message: 'msg' }]);
   });
 });
 
@@ -199,5 +212,19 @@ describe('pollOnce', () => {
     expect(emitted).toHaveLength(0);
     expect(n.activeIds()).toEqual(['timezone-drift']);
     expect(onError).toHaveBeenCalledOnce();
+  });
+
+  it('does not reconcile when isStopped() is true after the fetch (no post-stop re-raise)', async () => {
+    const { app, emitted } = fakeApp();
+    const n = new ProbeNotifier(app, PLUGIN_ID);
+    fetchSpy.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ results: [probe('timezone-drift', 'warn')] }),
+    } as Response);
+    // Simulate stop() having run while the fetch was in flight.
+    await pollOnce('http://127.0.0.1:3004', n, undefined, () => true);
+    expect(emitted).toHaveLength(0);
+    expect(n.activeIds()).toEqual([]);
   });
 });

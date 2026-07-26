@@ -43,6 +43,7 @@ function parseProbes(raw: unknown): ProbeResult[] | null {
     const o = r as Record<string, unknown>;
     if (
       typeof o.id === 'string' &&
+      o.id.length > 0 && // guard against notifications.doctor. with an empty id
       typeof o.label === 'string' &&
       typeof o.message === 'string' &&
       (o.status === 'ok' || o.status === 'warn' || o.status === 'fail' || o.status === 'unknown')
@@ -61,7 +62,12 @@ export async function fetchProbes(engineBaseUrl: string): Promise<ProbeResult[] 
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // Release the unread body so repeated failures don't tie up pooled
+      // connections.
+      await res.body?.cancel().catch(() => undefined);
+      return null;
+    }
     return parseProbes(await res.json());
   } catch {
     return null;
@@ -147,13 +153,18 @@ export class ProbeNotifier {
 
 /** One poll cycle: fetch probes and reconcile. Skips silently (leaving the
  *  active set untouched) when the engine can't be reached, so a transient
- *  engine blip doesn't spuriously clear real notifications. */
+ *  engine blip doesn't spuriously clear real notifications. `isStopped`, when
+ *  provided, is checked after the (async) fetch so a cycle that was in flight
+ *  when the plugin stopped does not reconcile — which would re-raise alarms
+ *  right after stop() cleared them. */
 export async function pollOnce(
   engineBaseUrl: string,
   notifier: ProbeNotifier,
   onError?: (msg: string) => void,
+  isStopped?: () => boolean,
 ): Promise<void> {
   const results = await fetchProbes(engineBaseUrl);
+  if (isStopped?.()) return;
   if (results === null) {
     onError?.('probes fetch failed — skipping this cycle (notifications unchanged)');
     return;
