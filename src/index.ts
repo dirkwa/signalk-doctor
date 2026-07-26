@@ -3,6 +3,7 @@ import type { IRouter, Request, Response } from 'express';
 import type { ContainerManagerApi } from './types.js';
 import { ConfigSchema, SCHEMA_DEFAULTS, type Config } from './config/schema.js';
 import { createConsoleProxy } from './proxy.js';
+import { ProbeNotifier, pollOnce } from './probes-notify.js';
 
 const PLUGIN_PATH_PREFIX = '/plugins/signalk-doctor';
 const CONSOLE_MOUNT = '/console';
@@ -167,6 +168,35 @@ interface PluginInternalState {
   config: Config;
   app: ServerAPI;
   containers?: ContainerManagerApi;
+  notifier?: ProbeNotifier;
+  pollTimer?: ReturnType<typeof setInterval>;
+}
+
+// Minimum poll interval; also the schema minimum. Guards against a mistyped
+// tiny interval hammering the engine.
+const MIN_POLL_INTERVAL_S = 10;
+
+/**
+ * Start the health-probe → SignalK notification poll loop. Guarded by the
+ * `publishNotifications` config toggle. Runs one cycle immediately, then on
+ * the configured interval. Every cycle is best-effort — a fetch failure skips
+ * that tick without clearing existing notifications, and nothing here throws
+ * out of start().
+ */
+function startNotificationPolling(state: PluginInternalState): void {
+  if (!state.config.publishNotifications) return;
+  const notifier = new ProbeNotifier(state.app, PLUGIN_ID);
+  state.notifier = notifier;
+
+  const intervalS = Math.max(
+    MIN_POLL_INTERVAL_S,
+    Math.floor(state.config.notificationIntervalSeconds),
+  );
+  const cycle = (): void => {
+    void pollOnce(ENGINE_LOCAL_URL, notifier, (msg) => state.app.debug(msg));
+  };
+  cycle(); // fire once now so a warning surfaces without waiting a full interval
+  state.pollTimer = setInterval(cycle, intervalS * 1000);
 }
 
 export default function pluginFactory(app: ServerAPI): Plugin {
@@ -255,9 +285,27 @@ export default function pluginFactory(app: ServerAPI): Plugin {
       } catch (err) {
         app.setPluginError(`could not probe ${CONTAINER_NAME}: ${errMsg(err)}`);
       }
+
+      // Republish the engine's warn/fail health probes as SignalK
+      // notifications so alarm panels see them. Independent of
+      // signalk-container (it only needs the engine's /api/probes), so it runs
+      // even in the container-manager-missing path above; guarded only by the
+      // config toggle. Never throws — a bad interval or fetch is swallowed.
+      startNotificationPolling(state);
     },
 
     stop(): void {
+      if (state.pollTimer) {
+        clearInterval(state.pollTimer);
+        state.pollTimer = undefined;
+      }
+      // Don't leave doctor alarms latched in the data model after shutdown.
+      try {
+        state.notifier?.clearAll();
+      } catch {
+        // best-effort
+      }
+      state.notifier = undefined;
       try {
         state.containers?.updates.unregister(PLUGIN_ID);
       } catch {
