@@ -26,9 +26,10 @@ export const ConfigSchema = Type.Object({
   notificationIntervalSeconds: Type.Number({
     default: 60,
     minimum: 10,
+    maximum: 3600,
     title: 'Notification poll interval (seconds)',
     description:
-      'How often to poll the doctor engine for probe status. Minimum 10s. ' +
+      'How often to poll the doctor engine for probe status. 10s–3600s. ' +
       'Only used when "Publish health-probe notifications" is on.',
   }),
 });

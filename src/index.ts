@@ -176,18 +176,25 @@ interface PluginInternalState {
   containers?: ContainerManagerApi;
   notifier?: ProbeNotifier;
   pollTimer?: ReturnType<typeof setInterval>;
-  // Set true in stop(); a poll that was already in flight when stop() ran
-  // checks this before reconciling so it can't re-raise alarms after clearAll.
-  pollStopped: boolean;
+  // Bumped on every start() and stop(). Each poll run captures the generation
+  // it belongs to; a cycle whose generation no longer matches is stale (a
+  // stop()→start() happened while it was in flight) and must NOT reconcile —
+  // otherwise it would re-raise alarms against an already-cleared notifier and
+  // clobber the new run's pollInFlight. Supersedes a plain stopped boolean,
+  // which a restart resets out from under an in-flight fetch.
+  pollGeneration: number;
   // In-flight guard: setInterval fires on a fixed period regardless of how
   // long a cycle takes, so a slow engine could overlap cycles and produce
   // out-of-order writes. Skip a tick while one is still running.
   pollInFlight: boolean;
 }
 
-// Minimum poll interval; also the schema minimum. Guards against a mistyped
-// tiny interval hammering the engine.
+// Poll-interval bounds. The min guards against a mistyped tiny interval
+// hammering the engine; the max keeps intervalS*1000 well within Node's 32-bit
+// setInterval limit (~24.8 days) — a larger value silently wraps to a rapid
+// loop. Both mirror the schema's minimum/maximum.
 const MIN_POLL_INTERVAL_S = 10;
+const MAX_POLL_INTERVAL_S = 3600;
 
 /**
  * Start the health-probe → SignalK notification poll loop. Guarded by the
@@ -198,19 +205,22 @@ const MIN_POLL_INTERVAL_S = 10;
  */
 function startNotificationPolling(state: PluginInternalState): void {
   if (!state.config.publishNotifications) return;
+  const generation = ++state.pollGeneration;
   const notifier = new ProbeNotifier(state.app, PLUGIN_ID);
   state.notifier = notifier;
-  state.pollStopped = false;
+  state.pollInFlight = false;
 
   // A malformed interval (NaN/Infinity from bad config) must not degrade
   // setInterval into a ~1ms hot loop — fall back to the schema default, then
-  // apply the floor.
+  // clamp between the floor and the ceiling.
   const raw = Math.floor(state.config.notificationIntervalSeconds);
   const seconds = Number.isFinite(raw) ? raw : SCHEMA_DEFAULTS.notificationIntervalSeconds;
-  const intervalS = Math.max(MIN_POLL_INTERVAL_S, seconds);
+  const intervalS = Math.min(MAX_POLL_INTERVAL_S, Math.max(MIN_POLL_INTERVAL_S, seconds));
+
+  const stale = (): boolean => state.pollGeneration !== generation;
 
   const cycle = (): void => {
-    if (state.pollStopped || state.pollInFlight) return; // no overlap, no post-stop run
+    if (stale() || state.pollInFlight) return; // no stale run, no overlap
     state.pollInFlight = true;
     void (async () => {
       try {
@@ -218,14 +228,16 @@ function startNotificationPolling(state: PluginInternalState): void {
           ENGINE_LOCAL_URL,
           notifier,
           (msg) => state.app.debug(msg),
-          () => state.pollStopped, // skip reconcile if stop() ran mid-fetch
+          stale, // skip reconcile if stop()/restart happened mid-fetch
         );
       } catch (err) {
         // reconcile()/handleMessage() could throw — never let it become an
         // unhandled rejection or take down the timer.
         state.app.debug(`notification poll cycle failed: ${errMsg(err)}`);
       } finally {
-        state.pollInFlight = false;
+        // Only release the guard if we still own the current run — a restart
+        // that superseded us owns its own pollInFlight.
+        if (!stale()) state.pollInFlight = false;
       }
     })();
   };
@@ -237,7 +249,7 @@ export default function pluginFactory(app: ServerAPI): Plugin {
   const state: PluginInternalState = {
     config: { ...SCHEMA_DEFAULTS },
     app,
-    pollStopped: false,
+    pollGeneration: 0,
     pollInFlight: false,
   };
 
@@ -331,10 +343,11 @@ export default function pluginFactory(app: ServerAPI): Plugin {
     },
 
     stop(): void {
-      // Mark stopped FIRST so any poll already in flight sees it and skips its
-      // reconcile — otherwise a completed fetch could re-raise alarms right
-      // after clearAll() below.
-      state.pollStopped = true;
+      // Bump the generation FIRST so any poll already in flight becomes stale
+      // and skips its reconcile — otherwise a completed fetch could re-raise
+      // alarms right after clearAll() below. A later start() bumps again, so a
+      // restart can't accidentally revive this run.
+      state.pollGeneration += 1;
       if (state.pollTimer) {
         clearInterval(state.pollTimer);
         state.pollTimer = undefined;
