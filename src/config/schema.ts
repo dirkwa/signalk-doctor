@@ -14,6 +14,24 @@ export const ConfigSchema = Type.Object({
     default: 'info',
     title: 'Log level',
   }),
+  publishNotifications: Type.Boolean({
+    default: true,
+    title: 'Publish health-probe notifications',
+    description:
+      'Poll the doctor engine and republish its warn/fail health probes as ' +
+      'SignalK notifications under notifications.doctor.<probe-id>, so alarm ' +
+      'panels (KIP, etc.) surface them. Cleared (state: normal) when a probe ' +
+      'recovers. Disable to keep probe results confined to the doctor console.',
+  }),
+  notificationIntervalSeconds: Type.Number({
+    default: 60,
+    minimum: 10,
+    maximum: 3600,
+    title: 'Notification poll interval (seconds)',
+    description:
+      'How often to poll the doctor engine for probe status. 10s–3600s. ' +
+      'Only used when "Publish health-probe notifications" is on.',
+  }),
 });
 
 export type Config = Static<typeof ConfigSchema>;
@@ -21,4 +39,6 @@ export type Config = Static<typeof ConfigSchema>;
 export const SCHEMA_DEFAULTS: Config = {
   managedContainer: false,
   logLevel: 'info',
+  publishNotifications: true,
+  notificationIntervalSeconds: 60,
 };

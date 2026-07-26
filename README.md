@@ -15,6 +15,7 @@ The heavy lifting (read-only probes, snapshot listing, last-known-good restore) 
 - Verifies the doctor container is `running`; on any other state, raises a plugin error in the admin UI explaining how to recover (without taking the server down).
 - Renders an embedded panel inside the admin UI (at `/admin/#/e/signalk_doctor`, with the admin sidebar still visible) as a Module Federation remote, rather than redirecting away to a standalone page.
 - Reverse-proxies the engine console same-origin under `/plugins/signalk-doctor/console/`, so the embedded panel can iframe the Doctor Console without mixed-content or CORS problems — and it works behind an HTTPS reverse proxy (Traefik/nginx) in front of signalk-server. The proxy forwards to the co-located engine over loopback (`http://127.0.0.1:3004`); signalk-server runs `Network=host` so loopback always reaches it with no DNS.
+- Republishes the engine's health probes as SignalK notifications (see [Health-probe notifications](#health-probe-notifications)), so a `warn`/`fail` probe reaches alarm panels (KIP, etc.) instead of living only in the Doctor Console.
 
 ## What this plugin does **not** do
 
@@ -23,10 +24,27 @@ The heavy lifting (read-only probes, snapshot listing, last-known-good restore) 
 
 ## Configuration
 
-| Field              | Default | Purpose                                                                                                                                                   |
-| ------------------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `managedContainer` | `false` | Advanced opt-in. If `true`, the plugin attempts to start the container itself instead of relying on the installer's Quadlet. Leave `false` in production. |
-| `logLevel`         | `info`  | `error` \| `info` \| `debug`.                                                                                                                             |
+| Field                         | Default | Purpose                                                                                                                                                   |
+| ----------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `managedContainer`            | `false` | Advanced opt-in. If `true`, the plugin attempts to start the container itself instead of relying on the installer's Quadlet. Leave `false` in production. |
+| `logLevel`                    | `info`  | `error` \| `info` \| `debug`.                                                                                                                             |
+| `publishNotifications`        | `true`  | Republish the engine's `warn`/`fail` health probes as SignalK notifications. Turn off to keep probe results confined to the Doctor Console.               |
+| `notificationIntervalSeconds` | `60`    | How often to poll the engine for probe status (minimum 10s). Only used when `publishNotifications` is on.                                                 |
+
+## Health-probe notifications
+
+When `publishNotifications` is on (the default), the plugin polls the engine's `GET /api/probes` and mirrors each **warn**/**fail** probe into the SignalK data model under `notifications.doctor.<probe-id>` (e.g. `notifications.doctor.timezone-drift`), so alarm panels surface them like any other notification:
+
+| Probe status | Notification `state` | `method`           |
+| ------------ | -------------------- | ------------------ |
+| `warn`       | `warn`               | `visual`           |
+| `fail`       | `alarm`              | `visual` + `sound` |
+| `ok`         | cleared → `normal`   | —                  |
+| `unknown`    | not raised           | —                  |
+
+`unknown` (a probe that timed out or couldn't measure) is deliberately **not** raised — it isn't a real failure and would flap on a busy boot. When a probe recovers, its notification is set to `state: normal` (SignalK's "resolved" convention); the plugin also clears every active notification on `stop()`, so a shutdown never leaves a stale doctor alarm latched. A transient engine-unreachable poll is skipped without clearing existing notifications, so a blip doesn't spuriously resolve a real alarm.
+
+The plugin reaches the engine over loopback (`http://127.0.0.1:3004` by default; override the port with `SIGNALK_DOCTOR_ENGINE_PORT` for a non-default install). `GET /api/probes` is unauthenticated, so no token is needed.
 
 ## Companion repos
 

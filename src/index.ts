@@ -3,6 +3,7 @@ import type { IRouter, Request, Response } from 'express';
 import type { ContainerManagerApi } from './types.js';
 import { ConfigSchema, SCHEMA_DEFAULTS, type Config } from './config/schema.js';
 import { createConsoleProxy } from './proxy.js';
+import { ProbeNotifier, pollOnce } from './probes-notify.js';
 
 const PLUGIN_PATH_PREFIX = '/plugins/signalk-doctor';
 const CONSOLE_MOUNT = '/console';
@@ -11,7 +12,13 @@ const PLUGIN_ID = 'signalk-doctor';
 const CONTAINER_NAME = 'signalk-doctor-server';
 const IMAGE = 'ghcr.io/dirkwa/signalk-doctor-server';
 const REPO = 'dirkwa/signalk-doctor-server';
-const ENGINE_PORT = 3004;
+// Default engine port; overridable via SIGNALK_DOCTOR_ENGINE_PORT for
+// non-default installs and for e2e tests that point the plugin at a mock
+// engine. Falls back to 3004 on an unset/invalid value.
+const ENGINE_PORT = ((): number => {
+  const raw = Number(process.env.SIGNALK_DOCTOR_ENGINE_PORT);
+  return Number.isInteger(raw) && raw > 0 && raw < 65536 ? raw : 3004;
+})();
 // Engine container Quadlet pins :latest by default (see signalk-universal-installer
 // AGENTS.md "Engine images run on :latest"). The honest "what version is running"
 // answer is the engine's own /api/health.version — see fetchEngineVersion() below.
@@ -167,12 +174,83 @@ interface PluginInternalState {
   config: Config;
   app: ServerAPI;
   containers?: ContainerManagerApi;
+  notifier?: ProbeNotifier;
+  pollTimer?: ReturnType<typeof setInterval>;
+  // Bumped on every start() and stop(). Each poll run captures the generation
+  // it belongs to; a cycle whose generation no longer matches is stale (a
+  // stop()→start() happened while it was in flight) and must NOT reconcile —
+  // otherwise it would re-raise alarms against an already-cleared notifier and
+  // clobber the new run's pollInFlight. Supersedes a plain stopped boolean,
+  // which a restart resets out from under an in-flight fetch.
+  pollGeneration: number;
+  // In-flight guard: setInterval fires on a fixed period regardless of how
+  // long a cycle takes, so a slow engine could overlap cycles and produce
+  // out-of-order writes. Skip a tick while one is still running.
+  pollInFlight: boolean;
+}
+
+// Poll-interval bounds. The min guards against a mistyped tiny interval
+// hammering the engine; the max keeps intervalS*1000 well within Node's 32-bit
+// setInterval limit (~24.8 days) — a larger value silently wraps to a rapid
+// loop. Both mirror the schema's minimum/maximum.
+const MIN_POLL_INTERVAL_S = 10;
+const MAX_POLL_INTERVAL_S = 3600;
+
+/**
+ * Start the health-probe → SignalK notification poll loop. Guarded by the
+ * `publishNotifications` config toggle. Runs one cycle immediately, then on
+ * the configured interval. Every cycle is best-effort — a fetch failure skips
+ * that tick without clearing existing notifications, and nothing here throws
+ * out of start().
+ */
+function startNotificationPolling(state: PluginInternalState): void {
+  if (!state.config.publishNotifications) return;
+  const generation = ++state.pollGeneration;
+  const notifier = new ProbeNotifier(state.app, PLUGIN_ID);
+  state.notifier = notifier;
+  state.pollInFlight = false;
+
+  // A malformed interval (NaN/Infinity from bad config) must not degrade
+  // setInterval into a ~1ms hot loop — fall back to the schema default, then
+  // clamp between the floor and the ceiling.
+  const raw = Math.floor(state.config.notificationIntervalSeconds);
+  const seconds = Number.isFinite(raw) ? raw : SCHEMA_DEFAULTS.notificationIntervalSeconds;
+  const intervalS = Math.min(MAX_POLL_INTERVAL_S, Math.max(MIN_POLL_INTERVAL_S, seconds));
+
+  const stale = (): boolean => state.pollGeneration !== generation;
+
+  const cycle = (): void => {
+    if (stale() || state.pollInFlight) return; // no stale run, no overlap
+    state.pollInFlight = true;
+    void (async () => {
+      try {
+        await pollOnce(
+          ENGINE_LOCAL_URL,
+          notifier,
+          (msg) => state.app.debug(msg),
+          stale, // skip reconcile if stop()/restart happened mid-fetch
+        );
+      } catch (err) {
+        // reconcile()/handleMessage() could throw — never let it become an
+        // unhandled rejection or take down the timer.
+        state.app.debug(`notification poll cycle failed: ${errMsg(err)}`);
+      } finally {
+        // Only release the guard if we still own the current run — a restart
+        // that superseded us owns its own pollInFlight.
+        if (!stale()) state.pollInFlight = false;
+      }
+    })();
+  };
+  cycle(); // fire once now so a warning surfaces without waiting a full interval
+  state.pollTimer = setInterval(cycle, intervalS * 1000);
 }
 
 export default function pluginFactory(app: ServerAPI): Plugin {
   const state: PluginInternalState = {
     config: { ...SCHEMA_DEFAULTS },
     app,
+    pollGeneration: 0,
+    pollInFlight: false,
   };
 
   const plugin: Plugin = {
@@ -191,6 +269,13 @@ export default function pluginFactory(app: ServerAPI): Plugin {
       // missing keys land at their declared defaults. (signalk-backup AGENTS.md, "Gotchas".)
       const config = { ...SCHEMA_DEFAULTS, ...(rawConfig as Partial<Config>) };
       state.config = config;
+
+      // Republish the engine's warn/fail health probes as SignalK
+      // notifications. Started BEFORE the container-manager wait: it only needs
+      // the engine's /api/probes (loopback), is independent of signalk-container,
+      // and must keep working even when the manager never loads (the early
+      // return below). Never throws — the poll loop swallows its own errors.
+      startNotificationPolling(state);
 
       const containers = await waitForContainerManager(30_000);
       if (!containers) {
@@ -258,6 +343,22 @@ export default function pluginFactory(app: ServerAPI): Plugin {
     },
 
     stop(): void {
+      // Bump the generation FIRST so any poll already in flight becomes stale
+      // and skips its reconcile — otherwise a completed fetch could re-raise
+      // alarms right after clearAll() below. A later start() bumps again, so a
+      // restart can't accidentally revive this run.
+      state.pollGeneration += 1;
+      if (state.pollTimer) {
+        clearInterval(state.pollTimer);
+        state.pollTimer = undefined;
+      }
+      // Don't leave doctor alarms latched in the data model after shutdown.
+      try {
+        state.notifier?.clearAll();
+      } catch {
+        // best-effort
+      }
+      state.notifier = undefined;
       try {
         state.containers?.updates.unregister(PLUGIN_ID);
       } catch {
