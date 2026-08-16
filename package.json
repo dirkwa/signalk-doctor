@@ -4,7 +4,7 @@
   "description": "Thin-shell SignalK plugin that surfaces the signalk-doctor-server console in the admin UI",
   "main": "plugin/index.js",
   "type": "module",
-  "license": "Apache-2.0",
+  "license": "SEE LICENSE IN LICENSE.md",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dirkwa/signalk-doctor.git"
@@ -34,7 +34,10 @@
   },
   "files": [
     "plugin/**/*",
-    "public/**/*"
+    "public/**/*",
+    "LICENSE.md",
+    "LICENSE-Apache-2.0-through-v0.x.txt",
+    "README.md"
   ],
   "scripts": {
     "build:plugin": "rimraf plugin && tsc -p tsconfig.json",
