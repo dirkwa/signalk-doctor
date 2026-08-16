@@ -55,3 +55,21 @@ The plugin reaches the engine over loopback (`http://127.0.0.1:3004` by default;
 | [signalk-updater-server](https://github.com/dirkwa/signalk-updater-server)           | Sister engine container — image lifecycle + version switching. |
 | [signalk-updater](https://github.com/dirkwa/signalk-updater)                         | Sister thin-shell plugin for the updater.                      |
 | [signalk-container](https://github.com/dirkwa/signalk-container)                     | Cross-plugin container-runtime substrate.                      |
+
+## License
+
+signalk-doctor 1.0.0 and later is **source available, not open source**.
+See [LICENSE.md](LICENSE.md).
+
+**You may**, free of charge: run it on your own boat or fleet, private or
+commercial; use it for internal company operations; modify it for your own use;
+use it in non-commercial education and research; and provide professional
+services to others who use it under these terms.
+
+**You may not**: redistribute modified versions or derivative works, or publish
+them to npm or anywhere else. Unmodified official releases may be mirrored,
+cached and redistributed verbatim as long as the notices stay intact and the
+license terms are included.
+
+Versions 0.4.0 and earlier remain available under the Apache-2.0 license
+(see [LICENSE-Apache-2.0-through-v0.x.txt](LICENSE-Apache-2.0-through-v0.x.txt)).
